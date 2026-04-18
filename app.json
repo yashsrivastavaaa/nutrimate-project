@@ -28,6 +28,12 @@
     "plugins": [
       "expo-router",
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow NutriMate to access your camera so you can capture donation photos."
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",
@@ -38,7 +44,9 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "@clerk/expo",
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,
