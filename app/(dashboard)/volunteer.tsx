@@ -13,6 +13,7 @@ import { authApi, donationApi } from "@/lib/api";
 import { palette } from "@/lib/theme";
 import { DonationStatus } from "@/lib/types";
 import { Image } from "expo-image";
+import { useRouter } from "expo-router";
 import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { FlatList, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
@@ -27,13 +28,15 @@ type VolunteerDonation = {
 
 export default function VolunteerDashboard() {
   const PAGE_SIZE = 8;
+  const router = useRouter();
   const { user } = useContext(AuthContext);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [tab, setTab] = useState<"open" | "assigned">("open");
+  const [tab, setTab] = useState<"open" | "assigned" | "completed">("open");
   const [ngoId, setNgoId] = useState<number | null>(null);
   const [openPickups, setOpenPickups] = useState<VolunteerDonation[]>([]);
   const [assigned, setAssigned] = useState<VolunteerDonation[]>([]);
+  const [completed, setCompleted] = useState<VolunteerDonation[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
@@ -44,12 +47,16 @@ export default function VolunteerDashboard() {
     if (!user?.id) return;
     const localNgoId = resolvedNgoId ?? ngoId;
     if (!localNgoId) return;
-    const [openRows, assignedRows] = await Promise.all([
+    const [openRows, allAssignedRows] = await Promise.all([
       donationApi.listVolunteerOpenPickups(localNgoId),
       donationApi.listVolunteerAssigned(user.id),
     ]);
+    const assignedRows = (allAssignedRows as any[]).filter((r: any) => r.status !== "completed" && r.status !== "ready");
+    const completedRows = (allAssignedRows as any[]).filter((r: any) => r.status === "completed");
+
     setOpenPickups(openRows as VolunteerDonation[]);
     setAssigned(assignedRows as VolunteerDonation[]);
+    setCompleted(completedRows as VolunteerDonation[]);
   }, [ngoId, user?.id]);
 
   useEffect(() => {
@@ -63,7 +70,7 @@ export default function VolunteerDashboard() {
         await load(resolvedNgoId);
       } catch (err) {
         console.error(err);
-        setError("Unable to load volunteer assignments right now.");
+        setError("Unable to load your volunteer assignments. Please check your connection and try again.");
       } finally {
         setLoading(false);
       }
@@ -77,7 +84,7 @@ export default function VolunteerDashboard() {
       await load();
     } catch (err) {
       console.error(err);
-      setError("Unable to refresh assignments. Please check your connection.");
+      setError("Failed to refresh. Please check your internet connection and try again.");
     } finally {
       setRefreshing(false);
     }
@@ -90,7 +97,7 @@ export default function VolunteerDashboard() {
       setActionLoadingId(id);
       const result = await donationApi.acceptVolunteerPickup(id, user.id);
       if (!result.success) {
-        setActionError(result.message ?? "Pickup no longer available.");
+        setActionError(result.message ?? "This pickup is no longer available. Please check other pickups.");
       }
       await load();
     } finally {
@@ -113,14 +120,22 @@ export default function VolunteerDashboard() {
     if (!user?.id) return;
     try {
       setActionLoadingId(id);
-      await donationApi.markPicked(id, user.id);
-      await load();
+      const result = await donationApi.markVolunteerPickup(id, user.id);
+      if (!result.success) {
+        setActionError(result.message || "Failed to mark pickup");
+      } else {
+        await load();
+      }
     } finally {
       setActionLoadingId(null);
     }
   };
 
-  const data = useMemo(() => (tab === "open" ? openPickups : assigned), [tab, openPickups, assigned]);
+  const data = useMemo(() => {
+    if (tab === "open") return openPickups;
+    if (tab === "assigned") return assigned;
+    return completed;
+  }, [tab, openPickups, assigned, completed]);
   const filteredData = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return data;
@@ -152,12 +167,21 @@ export default function VolunteerDashboard() {
       ) : (
         <>
           {actionError ? <Text style={styles.errorText}>{actionError}</Text> : null}
+
+          <AppButton
+            label="📦 My Assignments"
+            onPress={() => router.push("/(dashboard)/volunteer-assignments" as any)}
+          />
+
           <View style={styles.tabs}>
             <TouchableOpacity style={[styles.tab, tab === "open" && styles.tabActive]} onPress={() => setTab("open")}>
               <Text style={[styles.tabText, tab === "open" && styles.tabTextActive]}>Available Pickups</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[styles.tab, tab === "assigned" && styles.tabActive]} onPress={() => setTab("assigned")}>
               <Text style={[styles.tabText, tab === "assigned" && styles.tabTextActive]}>Assigned to Me</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.tab, tab === "completed" && styles.tabActive]} onPress={() => setTab("completed")}>
+              <Text style={[styles.tabText, tab === "completed" && styles.tabTextActive]}>Completed</Text>
             </TouchableOpacity>
           </View>
           <SearchBar
@@ -214,11 +238,18 @@ export default function VolunteerDashboard() {
                         loading={actionLoadingId === item.id}
                       />
                     </View>
-                  ) : (
+                  ) : tab === "assigned" ? (
                     <View style={styles.actionWrap}>
                       {item.status === "pickup_assigned" ? (
                         <AppButton
                           label="Mark Picked Up"
+                          onPress={() => markPicked(item.id)}
+                          loading={actionLoadingId === item.id}
+                        />
+                      ) : null}
+                      {item.status === "awaiting_volunteer_pickup" ? (
+                        <AppButton
+                          label="Confirm Pickup"
                           onPress={() => markPicked(item.id)}
                           loading={actionLoadingId === item.id}
                         />
@@ -231,7 +262,7 @@ export default function VolunteerDashboard() {
                         />
                       ) : null}
                     </View>
-                  )}
+                  ) : null}
                 </AppCard>
               )}
             />
@@ -245,7 +276,7 @@ export default function VolunteerDashboard() {
 const styles = StyleSheet.create({
   title: { fontSize: 30, fontWeight: "800", color: palette.primaryDark, marginTop: 26 },
   subtitle: { marginTop: 4, color: palette.muted, marginBottom: 12 },
-  tabs: { flexDirection: "row", gap: 8, marginBottom: 10 },
+  tabs: { flexDirection: "row", gap: 8, marginTop: 16, marginBottom: 10 },
   tab: { flex: 1, backgroundColor: "#E5EEE7", borderRadius: 10, paddingVertical: 10, alignItems: "center" },
   tabActive: { backgroundColor: palette.primary },
   tabText: { fontSize: 12, fontWeight: "700", color: "#334155" },

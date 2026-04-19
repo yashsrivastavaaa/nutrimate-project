@@ -32,6 +32,7 @@ export default function AdminDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
+  const [error, setError] = useState("");
   const [allDonations, setAllDonations] = useState<AdminDonation[]>([]);
   const [pendingNgoCount, setPendingNgoCount] = useState(0);
   const [stats, setStats] = useState({ users: 0, ngos: 0, volunteers: 0, donations: 0 });
@@ -59,8 +60,12 @@ export default function AdminDashboard() {
   useEffect(() => {
     (async () => {
       try {
+        setError("");
         setLoading(true);
         await load();
+      } catch (err) {
+        console.error(err);
+        setError("Unable to load admin dashboard. Please check your connection and try again.");
       } finally {
         setLoading(false);
       }
@@ -69,8 +74,12 @@ export default function AdminDashboard() {
 
   const onRefresh = async () => {
     try {
+      setError("");
       setRefreshing(true);
       await load();
+    } catch (err) {
+      console.error(err);
+      setError("Failed to refresh. Please check your internet connection and try again.");
     } finally {
       setRefreshing(false);
     }
@@ -102,6 +111,8 @@ export default function AdminDashboard() {
     <AppScreen scroll>
       <Text style={styles.title}>Admin Dashboard</Text>
       <Text style={styles.subtitle}>High level visibility and searchable donations feed.</Text>
+
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
       {loading ? (
         <SkeletonList count={6} />
@@ -151,20 +162,25 @@ export default function AdminDashboard() {
             }
             ListEmptyComponent={<Text style={styles.empty}>No donations matched your search.</Text>}
             renderItem={({ item }) => (
-              <AppCard>
-                {item.imageUrl ? (
-                  <View style={styles.imageWrap}>
-                    <Image source={{ uri: item.imageUrl }} style={styles.image} contentFit="cover" />
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={() => router.push({ pathname: "/(dashboard)/donation/[id]", params: { id: item.id } })}
+              >
+                <AppCard>
+                  {item.imageUrl ? (
+                    <View style={styles.imageWrap}>
+                      <Image source={{ uri: item.imageUrl }} style={styles.image} contentFit="cover" />
+                    </View>
+                  ) : null}
+                  <Text style={styles.donationTitle}>{item.title}</Text>
+                  <Text style={styles.meta}>ID: {item.id}</Text>
+                  <Text style={styles.meta}>{item.quantity ?? "Quantity not set"}</Text>
+                  <Text style={styles.meta}>{item.pickupAddress ?? "Address not set"}</Text>
+                  <View style={{ marginTop: 8 }}>
+                    <StatusBadge status={item.status} />
                   </View>
-                ) : null}
-                <Text style={styles.donationTitle}>{item.title}</Text>
-                <Text style={styles.meta}>ID: {item.id}</Text>
-                <Text style={styles.meta}>{item.quantity ?? "Quantity not set"}</Text>
-                <Text style={styles.meta}>{item.pickupAddress ?? "Address not set"}</Text>
-                <View style={{ marginTop: 8 }}>
-                  <StatusBadge status={item.status} />
-                </View>
-              </AppCard>
+                </AppCard>
+              </TouchableOpacity>
             )}
           />
         </>
@@ -185,6 +201,7 @@ function Metric({ label, value }: { label: string; value: number }) {
 const styles = StyleSheet.create({
   title: { fontSize: 30, fontWeight: "800", color: palette.primaryDark, marginTop: 26 },
   subtitle: { color: palette.muted, marginTop: 5, marginBottom: 14 },
+  errorText: { color: palette.danger, marginBottom: 10, fontWeight: "600" },
   grid: { gap: 10, marginBottom: 12 },
   metricValue: { fontSize: 30, fontWeight: "800", color: palette.primaryDark },
   metricLabel: { marginTop: 4, color: palette.muted, fontWeight: "600" },

@@ -3,7 +3,10 @@ export type AppRole = "donor" | "ngo" | "volunteer" | "admin";
 export type DonationStatus =
   | "available"
   | "reserved"
+  | "ready"
   | "pickup_assigned"
+  | "awaiting_volunteer_pickup"
+  | "awaiting_donor_handover"
   | "picked"
   | "delivered_to_ngo"
   | "completed";
@@ -20,6 +23,8 @@ export interface UserEntity {
   gender?: string | null;
   avatarType?: string | null;
   password?: string | null;
+  isVerified?: number | null;
+  donationCount?: number | null;
 }
 
 export interface NgoEntity {
@@ -31,6 +36,10 @@ export interface NgoEntity {
   city: string;
   addressLine1: string;
   addressLine2?: string | null;
+  description?: string | null;
+  contactNumber?: string | null;
+  familiesServed?: number;
+  donationsReceived?: number;
 }
 
 export interface AuthenticatedUser extends UserEntity {

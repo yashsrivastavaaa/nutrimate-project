@@ -1,3 +1,4 @@
+import { DonorBadge } from "@/components/DonorBadge";
 import { SkeletonCard } from "@/components/SkeletonCard";
 import {
   AppButton,
@@ -14,6 +15,7 @@ import { authApi, donationApi } from "@/lib/api";
 import { palette } from "@/lib/theme";
 import { DonationStatus } from "@/lib/types";
 import { Image } from "expo-image";
+import { useRouter } from "expo-router";
 import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { FlatList, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
@@ -24,10 +26,13 @@ type DonationItem = {
   pickupAddress: string | null;
   imageUrl: string;
   status: DonationStatus;
+  donorIsVerified: number | null;
+  donorDonationCount: number | null;
 };
 
 export default function NgoDashboard() {
   const PAGE_SIZE = 8;
+  const router = useRouter();
   const { ngoSession } = useContext(AuthContext);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -39,6 +44,7 @@ export default function NgoDashboard() {
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [requestSentIds, setRequestSentIds] = useState<Set<string>>(new Set());
   const [volunteerEmail, setVolunteerEmail] = useState("");
   const [volunteerLoading, setVolunteerLoading] = useState(false);
   const [volunteers, setVolunteers] = useState<
@@ -49,15 +55,17 @@ export default function NgoDashboard() {
 
   const load = useCallback(async () => {
     if (!ngoSession?.ngoId) return;
-    const [availableRows, acceptedRows, completedRows] = await Promise.all([
+    const [availableRows, acceptedRows, completedRows, pendingRequestIds] = await Promise.all([
       donationApi.listAvailable(),
       donationApi.listNgoAccepted(ngoSession.ngoId),
       donationApi.listNgoCompleted(ngoSession.ngoId),
+      donationApi.getNgoPendingRequestIds(ngoSession.ngoId),
     ]);
     const volunteerRows = await authApi.getNgoVolunteers(ngoSession.ngoId);
     setAvailable(availableRows as DonationItem[]);
     setAccepted(acceptedRows as DonationItem[]);
     setCompleted(completedRows as DonationItem[]);
+    setRequestSentIds(new Set(pendingRequestIds));
     setVolunteers(
       volunteerRows.map((v) => ({
         volunteerId: v.volunteerId,
@@ -76,7 +84,7 @@ export default function NgoDashboard() {
         await load();
       } catch (err) {
         console.error(err);
-        setError("Unable to load NGO dashboard right now.");
+        setError("Unable to load NGO dashboard. Please check your connection or try again later.");
       } finally {
         setLoading(false);
       }
@@ -90,7 +98,7 @@ export default function NgoDashboard() {
       await load();
     } catch (err) {
       console.error(err);
-      setError("Unable to refresh donations. Please check your connection.");
+      setError("Failed to refresh. Please check your internet connection and try again.");
     } finally {
       setRefreshing(false);
     }
@@ -126,7 +134,7 @@ export default function NgoDashboard() {
     try {
       setActionLoading(donationId);
       await donationApi.requestDonation(donationId, ngoSession.ngoId);
-      await load();
+      setRequestSentIds((prev) => new Set(prev).add(donationId));
     } finally {
       setActionLoading(null);
     }
@@ -146,7 +154,7 @@ export default function NgoDashboard() {
   const addVolunteer = async () => {
     if (!ngoSession?.ngoId) return;
     if (!volunteerEmail.trim()) {
-      setVolunteerError("Volunteer email is required.");
+      setVolunteerError("Please enter a volunteer's email address.");
       return;
     }
 
@@ -155,7 +163,14 @@ export default function NgoDashboard() {
       setVolunteerError("");
       const result = await authApi.addVolunteerToNgoByEmail(volunteerEmail.trim(), ngoSession.ngoId);
       if (!result.success) {
-        setVolunteerError(result.message ?? "Unable to add volunteer.");
+        // Provide helpful error messages
+        if (result.message?.includes("not found")) {
+          setVolunteerError("This email is not registered. Ask them to sign up first.");
+        } else if (result.message?.includes("already")) {
+          setVolunteerError("This volunteer is already linked to your NGO.");
+        } else {
+          setVolunteerError(result.message ?? "Unable to add volunteer. Please check the email and try again.");
+        }
         return;
       }
       setVolunteerEmail("");
@@ -177,6 +192,13 @@ export default function NgoDashboard() {
         <StatCard label="Available" value={available.length} />
         <StatCard label="Accepted" value={accepted.length} />
         <StatCard label="Completed" value={completed.length} />
+      </View>
+
+      <View style={styles.navButtons}>
+        <AppButton
+          label="🏆 Leaderboard"
+          onPress={() => router.push("/(dashboard)/leaderboard" as any)}
+        />
       </View>
 
       <View style={styles.mainTabs}>
@@ -262,7 +284,15 @@ export default function NgoDashboard() {
                 />
               }
               renderItem={({ item }) => (
-                <AppCard>
+                <AppCard
+                  badge={
+                    <DonorBadge
+                      isVerified={(item.donorIsVerified as number) === 1}
+                      donationCount={item.donorDonationCount as number}
+                      size="small"
+                    />
+                  }
+                >
                   {item.imageUrl ? (
                     <View style={styles.cardImageWrap}>
                       <Image source={{ uri: item.imageUrl }} style={styles.cardImage} contentFit="cover" />
@@ -278,9 +308,10 @@ export default function NgoDashboard() {
                   {activeTab === "available" ? (
                     <View style={styles.actionWrap}>
                       <AppButton
-                        label="Send Request"
+                        label={requestSentIds.has(item.id) ? "✓ Request Sent" : "Send Request"}
                         onPress={() => requestDonation(item.id)}
                         loading={actionLoading === item.id}
+                        disabled={requestSentIds.has(item.id)}
                       />
                     </View>
                   ) : null}
@@ -336,6 +367,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 30, fontWeight: "800", color: palette.primaryDark, marginTop: 26 },
   subtitle: { color: palette.muted, marginBottom: 14, marginTop: 4 },
   stats: { flexDirection: "row", gap: 8, marginBottom: 12 },
+  navButtons: { gap: 8, marginBottom: 12 },
   statCard: {
     flex: 1,
     backgroundColor: palette.surface,

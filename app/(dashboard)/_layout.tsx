@@ -6,10 +6,12 @@ import { useContext, useMemo } from "react";
 function requiredRoleForRoute(routeSegment?: string): AppRole | null {
   if (!routeSegment) return null;
   if (routeSegment === "profile") return null;
-  if (routeSegment === "doner" || routeSegment === "donation") return "donor";
-  if (routeSegment === "ngo") return "ngo";
-  if (routeSegment === "volunteer") return "volunteer";
+  if (routeSegment === "doner" || routeSegment === "favorite-ngos" || routeSegment === "donation-requests") return "donor";
+  if (routeSegment === "donation") return null; // Allow donors and admins to view donations
+  if (routeSegment === "ngo" || routeSegment === "favorite-donors") return "ngo";
+  if (routeSegment === "volunteer" || routeSegment === "volunteer-assignments") return "volunteer";
   if (routeSegment === "admin") return "admin";
+  if (routeSegment === "leaderboard" || routeSegment === "ngo-profile") return null; // Public routes
   return null;
 }
 

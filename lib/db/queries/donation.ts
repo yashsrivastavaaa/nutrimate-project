@@ -1,7 +1,7 @@
 import { DonationStatus } from "@/lib/types";
 import { and, count, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../index";
-import { donationRequests, donations, favoriteNgos, ngo, users, volunteers } from "../schema";
+import { donationRequests, donations, favoriteDonors, favoriteNgos, ngo, users, volunteers } from "../schema";
 
 type CreateDonationInput = {
   id: string;
@@ -57,24 +57,54 @@ export const getUserDonations = async (userId: string) => {
 
 export const getAvailableDonations = async () => {
   return db
-    .select()
+    .select({
+      id: donations.id,
+      title: donations.title,
+      quantity: donations.quantity,
+      pickupAddress: donations.pickupAddress,
+      imageUrl: donations.imageUrl,
+      status: donations.status,
+      donorIsVerified: users.isVerified,
+      donorDonationCount: users.donationCount,
+    })
     .from(donations)
+    .innerJoin(users, eq(donations.userId, users.id))
     .where(eq(donations.status, "available"))
     .orderBy(desc(donations.createdAt));
 };
 
 export const getNgoAcceptedDonations = async (ngoId: number) => {
   return db
-    .select()
+    .select({
+      id: donations.id,
+      title: donations.title,
+      quantity: donations.quantity,
+      pickupAddress: donations.pickupAddress,
+      imageUrl: donations.imageUrl,
+      status: donations.status,
+      donorIsVerified: users.isVerified,
+      donorDonationCount: users.donationCount,
+    })
     .from(donations)
+    .innerJoin(users, eq(donations.userId, users.id))
     .where(and(eq(donations.ngoId, ngoId), inArray(donations.status, ["reserved", "pickup_assigned", "picked", "delivered_to_ngo"])))
     .orderBy(desc(donations.createdAt));
 };
 
 export const getNgoCompletedDonations = async (ngoId: number) => {
   return db
-    .select()
+    .select({
+      id: donations.id,
+      title: donations.title,
+      quantity: donations.quantity,
+      pickupAddress: donations.pickupAddress,
+      imageUrl: donations.imageUrl,
+      status: donations.status,
+      donorIsVerified: users.isVerified,
+      donorDonationCount: users.donationCount,
+    })
     .from(donations)
+    .innerJoin(users, eq(donations.userId, users.id))
     .where(and(eq(donations.ngoId, ngoId), eq(donations.status, "completed")))
     .orderBy(desc(donations.createdAt));
 };
@@ -102,7 +132,7 @@ export const getVolunteerOpenPickups = async (ngoId: number) => {
     .where(
       and(
         eq(donations.ngoId, ngoId),
-        eq(donations.status, "reserved"),
+        eq(donations.status, "ready"),
         isNull(donations.volunteerId)
       )
     )
@@ -131,11 +161,17 @@ export const updateDonationDetails = async (payload: UpdateDonationInput) => {
       expiryTime: payload.expiryTime,
       pickupTime: payload.pickupTime,
     })
-    .where(and(eq(donations.id, payload.id), eq(donations.userId, payload.userId)))
+    .where(
+      and(
+        eq(donations.id, payload.id),
+        eq(donations.userId, payload.userId),
+        eq(donations.status, "available")
+      )
+    )
     .returning();
 
   if (!updated[0]) {
-    return { success: false, message: "Donation not found or access denied" };
+    return { success: false, message: "Donation not found, access denied, or cannot edit a reserved donation" };
   }
 
   return { success: true, data: updated[0] };
@@ -181,6 +217,26 @@ export const confirmDonationCompleted = async (id: string, ngoId: number) => {
   return { success: true };
 };
 
+export const markDonationAsReady = async (id: string, userId: string) => {
+  const updated = await db
+    .update(donations)
+    .set({ status: "ready", volunteerId: null })
+    .where(
+      and(
+        eq(donations.id, id),
+        eq(donations.userId, userId),
+        eq(donations.status, "reserved")
+      )
+    )
+    .returning({ id: donations.id });
+
+  if (!updated[0]) {
+    return { success: false, message: "Donation not found, access denied, or not reserved." };
+  }
+
+  return { success: true };
+};
+
 export const acceptVolunteerPickup = async (id: string, volunteerUserId: string) => {
   const volunteer = await db
     .select({ id: volunteers.id, ngoId: volunteers.ngoId })
@@ -199,14 +255,102 @@ export const acceptVolunteerPickup = async (id: string, volunteerUserId: string)
       and(
         eq(donations.id, id),
         eq(donations.ngoId, volunteer[0].ngoId),
-        eq(donations.status, "reserved"),
+        eq(donations.status, "ready"),
         isNull(donations.volunteerId)
       )
     )
     .returning({ id: donations.id });
 
   if (!updated[0]) {
-    return { success: false, message: "Pickup already assigned or no longer reserved." };
+    return { success: false, message: "Pickup already assigned or no longer ready." };
+  }
+
+  return { success: true };
+};
+
+export const markDonorHandover = async (id: string, userId: string) => {
+  const donation = await db
+    .select({ status: donations.status })
+    .from(donations)
+    .where(eq(donations.id, id))
+    .limit(1);
+
+  if (!donation[0]) {
+    return { success: false, message: "Donation not found" };
+  }
+
+  let nextStatus: DonationStatus;
+  if (donation[0].status === "awaiting_donor_handover") {
+    // Volunteer already marked picked, transition to picked
+    nextStatus = "picked";
+  } else {
+    // Donor marks first, transition to awaiting_volunteer_pickup
+    nextStatus = "awaiting_volunteer_pickup";
+  }
+
+  const updated = await db
+    .update(donations)
+    .set({ status: nextStatus })
+    .where(
+      and(
+        eq(donations.id, id),
+        eq(donations.userId, userId),
+        inArray(donations.status, ["pickup_assigned", "awaiting_donor_handover"])
+      )
+    )
+    .returning({ id: donations.id });
+
+  if (!updated[0]) {
+    return { success: false, message: "Cannot mark handover - donation not in the correct state or access denied." };
+  }
+
+  return { success: true };
+};
+
+export const markVolunteerPickup = async (id: string, volunteerUserId: string) => {
+  const volunteer = await db
+    .select({ id: volunteers.id })
+    .from(volunteers)
+    .where(eq(volunteers.userId, volunteerUserId))
+    .limit(1);
+
+  if (!volunteer[0]) {
+    return { success: false, message: "Volunteer mapping not found" };
+  }
+
+  const donation = await db
+    .select({ status: donations.status })
+    .from(donations)
+    .where(eq(donations.id, id))
+    .limit(1);
+
+  if (!donation[0]) {
+    return { success: false, message: "Donation not found" };
+  }
+
+  let nextStatus: DonationStatus;
+  if (donation[0].status === "awaiting_volunteer_pickup") {
+    // Donor already marked handover, transition to picked
+    nextStatus = "picked";
+  } else {
+    // Volunteer marks first, transition to awaiting_donor_handover
+    nextStatus = "awaiting_donor_handover";
+  }
+
+  const updated = await db
+    .update(donations)
+    .set({ status: nextStatus, volunteerId: volunteer[0].id })
+    .where(
+      and(
+        eq(donations.id, id),
+        eq(donations.volunteerId, volunteer[0].id),
+        inArray(donations.status, ["pickup_assigned", "awaiting_volunteer_pickup"])
+      )
+    )
+    .returning({ id: donations.id });
+
+  if (!updated[0]) {
+    return { success: false, message: "Cannot mark pickup - donation not in the correct state or access denied." };
   }
 
   return { success: true };
@@ -265,6 +409,20 @@ export const getDonationRequestsForDonor = async (donorId: string) => {
     .innerJoin(ngo, eq(donationRequests.ngoId, ngo.ngoId))
     .where(inArray(donationRequests.donationId, donationIds))
     .orderBy(desc(donationRequests.createdAt));
+};
+
+export const getNgoPendingRequestIds = async (ngoId: number) => {
+  const pendingRequests = await db
+    .select({ donationId: donationRequests.donationId })
+    .from(donationRequests)
+    .where(
+      and(
+        eq(donationRequests.ngoId, ngoId),
+        eq(donationRequests.status, "pending")
+      )
+    );
+
+  return pendingRequests.map((r) => r.donationId);
 };
 
 export const acceptNgoRequest = async (
@@ -362,11 +520,17 @@ export const listVolunteers = async () => {
 export const deleteDonation = async (donationId: string, userId: string) => {
   const result = await db
     .delete(donations)
-    .where(and(eq(donations.id, donationId), eq(donations.userId, userId)))
+    .where(
+      and(
+        eq(donations.id, donationId),
+        eq(donations.userId, userId),
+        eq(donations.status, "available")
+      )
+    )
     .returning({ id: donations.id });
 
   if (!result[0]) {
-    return { success: false, message: "Donation not found or access denied" };
+    return { success: false, message: "Donation not found, access denied, or cannot delete a reserved donation" };
   }
 
   return { success: true };
@@ -440,4 +604,172 @@ export const getDonationHistoryForExport = async (userId: string) => {
     .leftJoin(ngo, eq(donations.ngoId, ngo.ngoId))
     .where(eq(donations.userId, userId))
     .orderBy(desc(donations.createdAt));
+};
+
+// Feature: Favorite Donors for NGOs
+export const toggleFavoriteDonor = async (ngoId: number, donorId: string) => {
+  const existing = await db
+    .select()
+    .from(favoriteDonors)
+    .where(and(eq(favoriteDonors.ngoId, ngoId), eq(favoriteDonors.donorId, donorId)))
+    .limit(1);
+
+  if (existing[0]) {
+    await db
+      .delete(favoriteDonors)
+      .where(and(eq(favoriteDonors.ngoId, ngoId), eq(favoriteDonors.donorId, donorId)));
+    return { success: true, action: "removed" };
+  } else {
+    await db.insert(favoriteDonors).values({
+      ngoId,
+      donorId,
+      createdAt: new Date(),
+    });
+    return { success: true, action: "added" };
+  }
+};
+
+export const getFavoriteDonors = async (ngoId: number) => {
+  return db
+    .select({
+      userId: users.id,
+      fullName: users.fullName,
+      email: users.email,
+      donationCount: users.donationCount,
+      isVerified: users.isVerified,
+    })
+    .from(favoriteDonors)
+    .innerJoin(users, eq(favoriteDonors.donorId, users.id))
+    .where(eq(favoriteDonors.ngoId, ngoId))
+    .orderBy(desc(favoriteDonors.createdAt));
+};
+
+export const isFavoriteDonor = async (ngoId: number, donorId: string) => {
+  const result = await db
+    .select()
+    .from(favoriteDonors)
+    .where(and(eq(favoriteDonors.ngoId, ngoId), eq(favoriteDonors.donorId, donorId)))
+    .limit(1);
+
+  return !!result[0];
+};
+
+// Feature: NGO Public Profile
+export const getNgoProfilePublic = async (ngoId: number) => {
+  return db
+    .select({
+      ngoId: ngo.ngoId,
+      ngoName: ngo.ngoName,
+      email: ngo.email,
+      description: ngo.description,
+      contactNumber: ngo.contactNumber,
+      state: ngo.state,
+      city: ngo.city,
+      addressLine1: ngo.addressLine1,
+      familiesServed: ngo.familiesServed,
+      donationsReceived: ngo.donationsReceived,
+      status: ngo.status,
+    })
+    .from(ngo)
+    .where(eq(ngo.ngoId, ngoId))
+    .limit(1);
+};
+
+export const getAllApprovedNgos = async () => {
+  return db
+    .select({
+      ngoId: ngo.ngoId,
+      ngoName: ngo.ngoName,
+      email: ngo.email,
+      description: ngo.description,
+      contactNumber: ngo.contactNumber,
+      state: ngo.state,
+      city: ngo.city,
+      addressLine1: ngo.addressLine1,
+      familiesServed: ngo.familiesServed,
+      donationsReceived: ngo.donationsReceived,
+      status: ngo.status,
+    })
+    .from(ngo)
+    .where(eq(ngo.status, "approved"))
+    .orderBy(desc(ngo.donationsReceived));
+};
+
+export const getAllApprovedNgosWithCompletedCounts = async () => {
+  const ngos = await db
+    .select({
+      ngoId: ngo.ngoId,
+      ngoName: ngo.ngoName,
+      email: ngo.email,
+      description: ngo.description,
+      contactNumber: ngo.contactNumber,
+      state: ngo.state,
+      city: ngo.city,
+      addressLine1: ngo.addressLine1,
+      familiesServed: ngo.familiesServed,
+      donationsReceived: ngo.donationsReceived,
+      status: ngo.status,
+    })
+    .from(ngo)
+    .where(eq(ngo.status, "approved"))
+    .orderBy(desc(ngo.donationsReceived));
+
+  // Get completed donation counts for each NGO
+  const completedCounts = await Promise.all(
+    ngos.map(async (n) => {
+      const result = await db
+        .select({ count: count() })
+        .from(donations)
+        .where(and(eq(donations.ngoId, n.ngoId), eq(donations.status, "completed")));
+      return {
+        ngoId: n.ngoId,
+        completedCount: result[0]?.count ?? 0,
+      };
+    })
+  );
+
+  // Merge completed counts with NGO data
+  const countMap = new Map(completedCounts.map((c) => [c.ngoId, c.completedCount]));
+  return ngos.map((n) => ({
+    ...n,
+    completedCount: countMap.get(n.ngoId) ?? 0,
+  }));
+};
+
+// Feature: Donor Recognition Badge
+export const getDonorRecognitionBadge = async (userId: string) => {
+  const user = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+
+  if (!user[0]) return null;
+
+  const donationCount = user[0].donationCount || 0;
+  let badge = "bronze";
+
+  if (donationCount >= 100) {
+    badge = "platinum";
+  } else if (donationCount >= 50) {
+    badge = "gold";
+  } else if (donationCount >= 20) {
+    badge = "silver";
+  }
+
+  return {
+    badge,
+    donationCount,
+    nextMilestone: badge === "platinum" ? null : [20, 50, 100][["bronze", "silver", "gold"].indexOf(badge)] || 20,
+  };
+};
+
+// Feature: Update Donor Verification
+export const updateDonorVerification = async (userId: string, isVerified: boolean) => {
+  await db.update(users).set({ isVerified: isVerified ? 1 : 0 }).where(eq(users.id, userId));
+  return { success: true };
+};
+
+// Feature: Increment Donation Count
+export const incrementDonationCount = async (userId: string) => {
+  const user = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  const newCount = (user[0]?.donationCount || 0) + 1;
+  await db.update(users).set({ donationCount: newCount }).where(eq(users.id, userId));
+  return newCount;
 };

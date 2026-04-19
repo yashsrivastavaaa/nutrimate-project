@@ -323,5 +323,5 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: palette.primary, borderColor: palette.primary },
   chipText: { fontSize: 12, fontWeight: "700", color: "#334155" },
   chipTextActive: { color: "#fff" },
-  footer: { marginTop: 20 },
+  footer: { marginTop: 20, gap: 10 },
 });

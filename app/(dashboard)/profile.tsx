@@ -1,59 +1,64 @@
-import { AppButton, AppInput, AppScreen } from "@/components/ui";
+import { AppButton, AppCard, AppScreen } from "@/components/ui";
 import { AuthContext } from "@/context/AuthContext";
 import { ThemeContext } from "@/context/ThemeContext";
 import { authApi, donationApi } from "@/lib/api";
-import { exportDonationHistoryAsCSV } from "@/lib/exportUtils";
+import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter } from "expo-router";
-import { useCallback, useContext, useEffect, useState } from "react";
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useFocusEffect, useRouter } from "expo-router";
+import { useCallback, useContext, useState } from "react";
+import { Alert, StyleSheet, Text, View } from "react-native";
 
-const FIXED_STATE = "Uttar Pradesh";
-const FIXED_CITY = "Greater Noida";
-const SECTORS = ["Delta 1", "Alpha 1", "Alpha 2"] as const;
+type UserProfile = {
+  id: string;
+  fullName: string;
+  email: string;
+  phone?: string | null;
+  gender?: string | null;
+  roles: string[];
+};
+
+type NgoProfile = {
+  ngoId: number;
+  ngoName: string;
+  email: string;
+  state: string;
+  city: string;
+  addressLine1: string;
+  addressLine2: string;
+  description?: string;
+  contactNumber?: string;
+  familiesServed?: number;
+  donationsReceived?: number;
+  status: string;
+};
 
 export default function ProfileScreen() {
   const router = useRouter();
   const { user, userRoles, setUser, setUserRoles, ngoSession, setNgoSession, activeRole } = useContext(AuthContext);
-  const { isDarkMode, setIsDarkMode, palette } = useContext(ThemeContext);
-  const [loading, setLoading] = useState(false);
-  const [initialLoading, setInitialLoading] = useState(true);
+  const { palette } = useContext(ThemeContext);
+  const [loading, setLoading] = useState(true);
   const [donationStats, setDonationStats] = useState(0);
-  const [exportLoading, setExportLoading] = useState(false);
-
-  const [userForm, setUserForm] = useState({
-    fullName: "",
-    email: "",
-    phone: "",
-    gender: "",
-  });
-
-  const [ngoForm, setNgoForm] = useState({
-    ngoName: "",
-    email: "",
-    state: FIXED_STATE,
-    city: FIXED_CITY,
-    sector: "",
-    addressLine2: "",
-  });
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [ngoProfile, setNgoProfile] = useState<NgoProfile | null>(null);
+  const [ngoCompletedCount, setNgoCompletedCount] = useState(0);
 
   const isNgo = activeRole === "ngo" && !!ngoSession?.ngoId;
 
   const load = useCallback(async () => {
     try {
-      setInitialLoading(true);
+      setLoading(true);
 
       if (isNgo && ngoSession?.ngoId) {
         const ngo = await authApi.getNgoById(ngoSession.ngoId);
         if (ngo) {
-          setNgoForm({
-            ngoName: ngo.ngoName ?? "",
-            email: ngo.email ?? "",
-            state: ngo.state ?? FIXED_STATE,
-            city: ngo.city ?? FIXED_CITY,
-            sector: ngo.addressLine1 ?? "",
-            addressLine2: ngo.addressLine2 ?? "",
-          });
+          setNgoProfile(ngo as NgoProfile);
+        }
+        // Fetch completed donations count for NGO
+        try {
+          const completedDonations = await donationApi.listNgoCompleted(ngoSession.ngoId);
+          setNgoCompletedCount((completedDonations as any[]).length);
+        } catch (err) {
+          console.error("Failed to fetch completed donations:", err);
         }
         return;
       }
@@ -61,11 +66,13 @@ export default function ProfileScreen() {
       if (user?.id) {
         const profile = await authApi.getUserById(user.id);
         if (profile) {
-          setUserForm({
-            fullName: profile.fullName ?? "",
-            email: profile.email ?? "",
-            phone: profile.phone ?? "",
-            gender: profile.gender ?? "",
+          setUserProfile({
+            id: profile.id,
+            fullName: profile.fullName,
+            email: profile.email,
+            phone: profile.phone,
+            gender: profile.gender,
+            roles: profile.roles ?? userRoles,
           });
           // Fetch donation success stats for donors
           if (activeRole === "donor") {
@@ -75,356 +82,334 @@ export default function ProfileScreen() {
         }
       }
     } finally {
-      setInitialLoading(false);
-    }
-  }, [isNgo, ngoSession?.ngoId, user?.id, activeRole]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const saveUserProfile = async () => {
-    if (!user?.id) return;
-    if (!userForm.fullName.trim() || !userForm.email.trim()) {
-      Alert.alert("Validation", "Name and email are required.");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      const updated = await authApi.updateUserProfile({
-        id: user.id,
-        fullName: userForm.fullName.trim(),
-        email: userForm.email.trim(),
-        phone: userForm.phone.trim(),
-        gender: userForm.gender.trim(),
-        avatarType: user.avatarType ?? "",
-      });
-      if (updated) {
-        setUser(updated);
-        setUserRoles(updated.roles ?? userRoles);
-        await AsyncStorage.setItem("userData", JSON.stringify(updated));
-        await AsyncStorage.setItem("userRoles", JSON.stringify(updated.roles ?? userRoles));
-      }
-      Alert.alert("Saved", "Profile updated successfully.");
-    } catch (e) {
-      console.error(e);
-      Alert.alert("Error", "Unable to update profile.");
-    } finally {
       setLoading(false);
     }
+  }, [isNgo, ngoSession?.ngoId, user?.id, activeRole, userRoles]);
+
+  // Refresh profile when screen is focused
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
+
+  // Helper to get avatar based on gender
+  const getAvatar = () => {
+    if (isNgo) return "🏢";
+    if (userProfile?.gender === "male") return "👨";
+    if (userProfile?.gender === "female") return "👩";
+
+    // Get initials as fallback
+    if (!userProfile?.fullName) return "?";
+    const names = userProfile.fullName.trim().split(" ");
+    return names.length > 1
+      ? (names[0][0] + names[1][0]).toUpperCase()
+      : names[0][0].toUpperCase();
   };
 
-  const saveNgoProfile = async () => {
-    if (!ngoSession?.ngoId) return;
-    if (!ngoForm.ngoName.trim() || !ngoForm.email.trim() || !ngoForm.sector.trim() || !ngoForm.addressLine2.trim()) {
-      Alert.alert("Validation", "NGO name, email, sector and address line 2 are required.");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      const updated = await authApi.updateNgoProfile({
-        ngoId: ngoSession.ngoId,
-        ngoName: ngoForm.ngoName.trim(),
-        email: ngoForm.email.trim(),
-        state: ngoForm.state.trim(),
-        city: ngoForm.city.trim(),
-        addressLine1: ngoForm.sector.trim(),
-        addressLine2: ngoForm.addressLine2.trim(),
-      });
-      if (updated) {
-        const session = {
-          ngoId: updated.ngoId,
-          email: updated.email,
-          ngoName: updated.ngoName,
-          city: updated.city,
-          state: updated.state,
-        };
-        setNgoSession(session);
-        await AsyncStorage.setItem("ngoSession", JSON.stringify(session));
-      }
-      Alert.alert("Saved", "NGO profile updated successfully.");
-    } catch (e) {
-      console.error(e);
-      Alert.alert("Error", "Unable to update NGO profile.");
-    } finally {
-      setLoading(false);
-    }
+  const handleLogout = () => {
+    Alert.alert("Logout", "Are you sure you want to logout?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Logout",
+        style: "destructive",
+        onPress: async () => {
+          await AsyncStorage.multiRemove(["userData", "userRoles", "activeRole", "ngoSession"]);
+          setUser(null);
+          setUserRoles([]);
+          setNgoSession(null);
+          router.replace("/");
+        },
+      },
+    ]);
   };
 
-  const handleExportDonationHistory = async () => {
-    if (!user?.id) return;
-    try {
-      setExportLoading(true);
-      const donations = await donationApi.getDonationHistoryForExport(user.id);
-      if (donations.length === 0) {
-        Alert.alert("No Data", "You have no donation history to export.");
-        return;
-      }
-      await exportDonationHistoryAsCSV(donations);
-      Alert.alert("Success", "Donation history exported successfully!");
-    } catch (error) {
-      console.error("Export error:", error);
-      Alert.alert("Error", "Failed to export donation history. Please try again.");
-    } finally {
-      setExportLoading(false);
-    }
-  };
+  if (loading) {
+    return (
+      <AppScreen scroll>
+        <Text style={{ ...styles.loading, color: palette.muted }}>Loading profile...</Text>
+      </AppScreen>
+    );
+  }
 
   return (
     <AppScreen scroll>
-      <View style={getStyles(palette).container}>
-        <Text style={getStyles(palette).title}>Profile</Text>
-        <Text style={getStyles(palette).subtitle}>
-          {isNgo ? "Update your NGO organization details." : "Update your personal details."}
+      <View style={styles.container}>
+        {/* Header */}
+        <Text style={{ ...styles.title, color: palette.text }}>Profile</Text>
+        <Text style={{ ...styles.subtitle, color: palette.muted }}>
+          {isNgo ? "NGO Organization Details" : "Your Personal Profile"}
         </Text>
-        {!isNgo ? <Text style={getStyles(palette).rolesText}>Roles: {userRoles.join(", ") || "donor"}</Text> : null}
 
-        {!isNgo && activeRole === "donor" && (
-          <View style={getStyles(palette).statsCard}>
-            <Text style={getStyles(palette).statsLabel}>Impact</Text>
-            <Text style={getStyles(palette).statsValue}>
-              {donationStats} {donationStats === 1 ? "family helped" : "families helped"}
+        {/* Avatar Card */}
+        <View style={{ ...styles.avatarCard, backgroundColor: palette.surface }}>
+          <View
+            style={{
+              ...styles.avatar,
+              backgroundColor: palette.primary,
+            }}
+          >
+            <Text style={styles.avatarText}>{getAvatar()}</Text>
+          </View>
+          <View style={styles.avatarInfo}>
+            <Text style={{ ...styles.avatarName, color: palette.text }}>
+              {isNgo ? ngoProfile?.ngoName : userProfile?.fullName}
+            </Text>
+            <Text style={{ ...styles.avatarEmail, color: palette.muted }}>
+              {isNgo ? ngoProfile?.email : userProfile?.email}
             </Text>
           </View>
-        )}
+        </View>
 
-        {initialLoading ? (
-          <Text style={getStyles(palette).loading}>Loading profile...</Text>
-        ) : (
-          <View style={getStyles(palette).form}>
-            {isNgo ? (
-              <>
-                <AppInput
-                  label="NGO Name"
-                  value={ngoForm.ngoName}
-                  onChangeText={(ngoName) => setNgoForm((s) => ({ ...s, ngoName }))}
-                />
-                <AppInput
-                  label="Email"
-                  value={ngoForm.email}
-                  onChangeText={(email) => setNgoForm((s) => ({ ...s, email }))}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                />
-                <AppInput
-                  label="State (Fixed)"
-                  value={ngoForm.state}
-                  onChangeText={(state) => setNgoForm((s) => ({ ...s, state }))}
-                  editable={false}
-                />
-                <AppInput
-                  label="City (Fixed)"
-                  value={ngoForm.city}
-                  onChangeText={(city) => setNgoForm((s) => ({ ...s, city }))}
-                  editable={false}
-                />
-                <Text style={getStyles(palette).fieldLabel}>Sector</Text>
-                <View style={getStyles(palette).chips}>
-                  {SECTORS.map((sector) => (
-                    <TouchableOpacity
-                      key={sector}
-                      style={[getStyles(palette).chip, ngoForm.sector === sector && getStyles(palette).chipActive]}
-                      onPress={() => setNgoForm((s) => ({ ...s, sector }))}
-                    >
-                      <Text style={[getStyles(palette).chipText, ngoForm.sector === sector && getStyles(palette).chipTextActive]}>
-                        {sector}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <AppInput
-                  label="Address Line 2"
-                  value={ngoForm.addressLine2}
-                  onChangeText={(addressLine2) => setNgoForm((s) => ({ ...s, addressLine2 }))}
-                />
-                <AppButton label="Save NGO Profile" onPress={saveNgoProfile} loading={loading} />
-              </>
-            ) : (
-              <>
-                <AppInput
-                  label="Full Name"
-                  placeholder="John Doe"
-                  value={userForm.fullName}
-                  onChangeText={(fullName) => setUserForm((s) => ({ ...s, fullName }))}
-                />
-                <AppInput
-                  label="Email"
-                  placeholder="you@example.com"
-                  value={userForm.email}
-                  onChangeText={(email) => setUserForm((s) => ({ ...s, email }))}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                />
-                <AppInput
-                  label="Phone"
-                  placeholder="9876543210"
-                  value={userForm.phone}
-                  onChangeText={(phone) => setUserForm((s) => ({ ...s, phone }))}
-                  keyboardType="phone-pad"
-                />
-                <Text style={getStyles(palette).label}>Gender</Text>
-                <View style={getStyles(palette).genderRow}>
-                  {["male", "female", "other"].map((g) => (
-                    <TouchableOpacity
-                      key={g}
-                      style={[getStyles(palette).genderBtn, userForm.gender === g && getStyles(palette).genderActive]}
-                      onPress={() => setUserForm((s) => ({ ...s, gender: g }))}
-                    >
-                      <Text style={[getStyles(palette).genderText, userForm.gender === g && { color: "#fff" }]}>
-                        {g.charAt(0).toUpperCase() + g.slice(1)}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <AppButton label="Save Profile" onPress={saveUserProfile} loading={loading} />
-              </>
+        {/* User Profile Section */}
+        {!isNgo && userProfile && (
+          <>
+            {/* Roles Badge */}
+            <View style={styles.section}>
+              <Text style={{ ...styles.sectionLabel, color: palette.muted }}>Roles</Text>
+              <View style={styles.rolesContainer}>
+                {userProfile.roles.map((role) => (
+                  <View
+                    key={role}
+                    style={{
+                      ...styles.roleBadge,
+                      backgroundColor: palette.primary,
+                    }}
+                  >
+                    <Text style={styles.roleBadgeText}>{role}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+
+            {/* Stats */}
+            {activeRole === "donor" && (
+              <View
+                style={{
+                  ...styles.statsCard,
+                  backgroundColor: palette.background === "#0F172A" ? "#1E3A1F" : "#EAF8EE",
+                  borderLeftColor: palette.primary,
+                }}
+              >
+                <Text style={{ ...styles.statsLabel, color: palette.muted }}>Impact</Text>
+                <Text style={{ ...styles.statsValue, color: palette.primary }}>
+                  {donationStats} {donationStats === 1 ? "family helped" : "families helped"}
+                </Text>
+              </View>
             )}
-          </View>
+
+            {/* Personal Details */}
+            <View style={styles.section}>
+              <Text style={{ ...styles.sectionLabel, color: palette.muted }}>Personal Details</Text>
+              <AppCard>
+                <DetailRow
+                  icon="phone"
+                  label="Phone"
+                  value={userProfile.phone ?? "Not provided"}
+                  palette={palette}
+                />
+                <DetailRow
+                  icon="venus-mars"
+                  label="Gender"
+                  value={userProfile.gender ? userProfile.gender.charAt(0).toUpperCase() + userProfile.gender.slice(1) : "Not specified"}
+                  palette={palette}
+                />
+              </AppCard>
+            </View>
+          </>
         )}
 
-        <View style={getStyles(palette).actions}>
+        {/* NGO Profile Section */}
+        {isNgo && ngoProfile && (
+          <>
+            <View style={styles.section}>
+              <Text style={{ ...styles.sectionLabel, color: palette.muted }}>Organization Details</Text>
+              <AppCard>
+                <DetailRow icon="domain" label="State" value={ngoProfile.state} palette={palette} />
+                <DetailRow icon="city" label="City" value={ngoProfile.city} palette={palette} />
+                <DetailRow icon="map-marker" label="Sector" value={ngoProfile.addressLine1} palette={palette} />
+                <DetailRow icon="home" label="Address" value={ngoProfile.addressLine2} palette={palette} />
+              </AppCard>
+            </View>
+
+            {ngoProfile.description && (
+              <View style={styles.section}>
+                <Text style={{ ...styles.sectionLabel, color: palette.muted }}>About</Text>
+                <AppCard>
+                  <Text style={{ ...styles.descriptionText, color: palette.text }}>
+                    {ngoProfile.description}
+                  </Text>
+                </AppCard>
+              </View>
+            )}
+
+            <View style={styles.section}>
+              <Text style={{ ...styles.sectionLabel, color: palette.muted }}>Statistics</Text>
+              <View style={styles.statsRow}>
+                <View
+                  style={{
+                    ...styles.statItem,
+                    backgroundColor: palette.surface,
+                  }}
+                >
+                  <MaterialCommunityIcons name="account-multiple" size={24} color={palette.primary} />
+                  <Text style={{ ...styles.statItemLabel, color: palette.muted }}>Families Served</Text>
+                  <Text style={{ ...styles.statItemValue, color: palette.text }}>
+                    {ngoCompletedCount}
+                  </Text>
+                </View>
+                <View
+                  style={{
+                    ...styles.statItem,
+                    backgroundColor: palette.surface,
+                  }}
+                >
+                  <MaterialCommunityIcons name="gift" size={24} color={palette.primary} />
+                  <Text style={{ ...styles.statItemLabel, color: palette.muted }}>Donations Received</Text>
+                  <Text style={{ ...styles.statItemValue, color: palette.text }}>
+                    {ngoCompletedCount}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {ngoProfile.contactNumber && (
+              <View style={styles.section}>
+                <AppCard>
+                  <DetailRow
+                    icon="phone"
+                    label="Contact Number"
+                    value={ngoProfile.contactNumber}
+                    palette={palette}
+                  />
+                </AppCard>
+              </View>
+            )}
+          </>
+        )}
+
+        {/* Action Buttons */}
+        <View style={styles.actions}>
+          <AppButton
+            label="✏️ Edit Profile"
+            onPress={() => router.push("/(dashboard)/edit-profile" as any)}
+          />
+
           {!isNgo && activeRole === "donor" && (
             <AppButton
-              label="📥 Export Donation History"
-              onPress={handleExportDonationHistory}
-              loading={exportLoading}
+              label="🏆 View Donor Leaderboard"
+              onPress={() => router.push("/(dashboard)/leaderboard" as any)}
             />
           )}
-          <AppButton
-            label="Logout"
-            variant="danger"
-            onPress={() => {
-              Alert.alert(
-                "Logout",
-                "Are you sure you want to logout?",
-                [
-                  { text: "Cancel", style: "cancel" },
-                  {
-                    text: "Logout",
-                    style: "destructive",
-                    onPress: async () => {
-                      await AsyncStorage.multiRemove(["userData", "userRoles", "activeRole", "ngoSession"]);
-                      setUser(null);
-                      setUserRoles([]);
-                      setNgoSession(null);
-                      router.replace("/");
-                    },
-                  },
-                ]
-              );
-            }}
-          />
+
+          {activeRole === "volunteer" && (
+            <AppButton
+              label="📦 My Assignments"
+              onPress={() => router.push("/(dashboard)/volunteer-assignments" as any)}
+            />
+          )}
+
+          <AppButton label="Logout" variant="danger" onPress={handleLogout} />
         </View>
       </View>
     </AppScreen>
   );
 }
 
+function DetailRow({
+  icon,
+  label,
+  value,
+  palette,
+}: {
+  icon: string;
+  label: string;
+  value: string | null | undefined;
+  palette: any;
+}) {
+  return (
+    <View style={styles.detailRow}>
+      <View style={styles.detailRowLeft}>
+        <MaterialCommunityIcons name={icon as any} size={18} color={palette.muted} />
+        <Text style={{ ...styles.detailLabel, color: palette.muted }}>{label}</Text>
+      </View>
+      <Text style={{ ...styles.detailValue, color: palette.text }}>{value ?? "N/A"}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  container: { paddingBottom: 20 },
   title: { fontSize: 30, fontWeight: "800", marginTop: 18 },
-  subtitle: { marginTop: 5 },
-  rolesText: { marginTop: 4, fontWeight: "600" },
+  subtitle: { marginTop: 5, fontSize: 14 },
+  loading: { marginTop: 18, fontWeight: "600", fontSize: 15, textAlign: "center" },
+
+  // Avatar Card
+  avatarCard: {
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  avatar: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  avatarText: { fontSize: 40, fontWeight: "700" },
+  avatarInfo: { flex: 1 },
+  avatarName: { fontSize: 18, fontWeight: "700", marginBottom: 4 },
+  avatarEmail: { fontSize: 13, marginBottom: 4 },
+
+  // Roles
+  rolesContainer: { flexDirection: "row", gap: 8, flexWrap: "wrap", marginTop: 8 },
+  roleBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16 },
+  roleBadgeText: { color: "#fff", fontWeight: "600", fontSize: 12 },
+
+  // Sections
+  section: { marginTop: 16 },
+  sectionLabel: { fontSize: 12, fontWeight: "700", marginBottom: 8, textTransform: "uppercase" },
+
+  // Stats
   statsCard: {
     borderRadius: 10,
     padding: 14,
-    marginTop: 14,
+    marginTop: 16,
     borderLeftWidth: 4,
   },
   statsLabel: { fontSize: 12, fontWeight: "700" },
-  statsValue: { fontSize: 24, fontWeight: "800", marginTop: 4 },
-  loading: { marginTop: 18, fontWeight: "600", fontSize: 15, textAlign: "center" },
-  form: { marginTop: 16, gap: 12 },
-  fieldLabel: { fontSize: 13, fontWeight: "700" },
-  chips: { flexDirection: "row", gap: 8, flexWrap: "wrap", marginBottom: 8 },
-  chip: {
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  chipActive: {},
-  chipText: { fontWeight: "600", fontSize: 12 },
-  chipTextActive: {},
-  actions: { marginTop: 20, gap: 10 },
-  darkModeToggle: {
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-    alignItems: "center",
-    borderWidth: 1,
-  },
-  darkModeText: { fontSize: 14, fontWeight: "700" },
-  label: { fontSize: 14, fontWeight: "600", marginTop: 8, marginBottom: 6 },
-  genderRow: { flexDirection: "row", gap: 8, marginBottom: 12 },
-  genderBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    alignItems: "center",
-  },
-  genderActive: {},
-  genderText: { fontSize: 13, fontWeight: "600" },
-  container: {},
-});
+  statsValue: { fontSize: 28, fontWeight: "800", marginTop: 6 },
 
-const getStyles = (palette: typeof import("@/lib/theme").lightPalette) =>
-  StyleSheet.create({
-    container: {},
-    title: { fontSize: 30, fontWeight: "800", color: palette.text, marginTop: 18 },
-    subtitle: { color: palette.muted, marginTop: 5 },
-    rolesText: { color: palette.primaryDark, marginTop: 4, fontWeight: "600" },
-    statsCard: {
-      backgroundColor: palette.background === "#0F172A" ? "#1E3A1F" : "#EAF8EE",
-      borderRadius: 10,
-      padding: 14,
-      marginTop: 14,
-      borderLeftWidth: 4,
-      borderLeftColor: palette.primary,
-    },
-    statsLabel: { fontSize: 12, fontWeight: "700", color: palette.muted },
-    statsValue: { fontSize: 24, fontWeight: "800", color: palette.primary, marginTop: 4 },
-    loading: { marginTop: 18, color: palette.muted, fontWeight: "600", fontSize: 15, textAlign: "center" },
-    form: { marginTop: 16, gap: 12 },
-    fieldLabel: { fontSize: 13, color: palette.muted, fontWeight: "700" },
-    chips: { flexDirection: "row", gap: 8, flexWrap: "wrap", marginBottom: 8 },
-    chip: {
-      borderWidth: 1,
-      borderColor: palette.border,
-      borderRadius: 999,
-      paddingVertical: 8,
-      paddingHorizontal: 12,
-      backgroundColor: palette.surface,
-    },
-    chipActive: { borderColor: palette.primary, backgroundColor: palette.background === "#0F172A" ? "#1E3A1F" : "#EAF8EE" },
-    chipText: { color: palette.background === "#0F172A" ? palette.muted : "#334155", fontWeight: "600", fontSize: 12 },
-    chipTextActive: { color: palette.primaryDark },
-    actions: { marginTop: 20, gap: 10 },
-    darkModeToggle: {
-      backgroundColor: palette.surface,
-      paddingVertical: 12,
-      paddingHorizontal: 14,
-      borderRadius: 8,
-      alignItems: "center",
-      borderWidth: 1,
-      borderColor: palette.border,
-    },
-    darkModeText: { fontSize: 14, fontWeight: "700", color: palette.text },
-    label: { fontSize: 14, fontWeight: "600", color: palette.text, marginTop: 8, marginBottom: 6 },
-    genderRow: { flexDirection: "row", gap: 8, marginBottom: 12 },
-    genderBtn: {
-      flex: 1,
-      paddingVertical: 10,
-      paddingHorizontal: 12,
-      borderRadius: 8,
-      borderWidth: 1,
-      borderColor: palette.border,
-      backgroundColor: palette.surface,
-      alignItems: "center",
-    },
-    genderActive: { backgroundColor: palette.primary, borderColor: palette.primary },
-    genderText: { fontSize: 13, fontWeight: "600", color: palette.text },
-  });
+  statsRow: { flexDirection: "row", gap: 12, marginTop: 8 },
+  statItem: {
+    flex: 1,
+    borderRadius: 10,
+    padding: 12,
+    alignItems: "center",
+    gap: 8,
+  },
+  statItemLabel: { fontSize: 11, fontWeight: "600", textAlign: "center" },
+  statItemValue: { fontSize: 20, fontWeight: "800" },
+
+  // Detail Row
+  detailRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
+  },
+  detailRowLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
+  detailLabel: { fontSize: 13, fontWeight: "600" },
+  detailValue: { fontSize: 14, fontWeight: "700" },
+
+  descriptionText: { fontSize: 14, lineHeight: 20 },
+
+  // Actions
+  actions: { marginTop: 20, gap: 10 },
+});

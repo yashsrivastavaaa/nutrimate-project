@@ -1,3 +1,4 @@
+import { DonorBadge } from "@/components/DonorBadge";
 import { SkeletonCard } from "@/components/SkeletonCard";
 import {
   AppButton,
@@ -7,7 +8,7 @@ import {
   StatusBadge,
 } from "@/components/ui";
 import { AuthContext } from "@/context/AuthContext";
-import { donationApi } from "@/lib/api";
+import { authApi, donationApi } from "@/lib/api";
 import { palette } from "@/lib/theme";
 import { DonationStatus } from "@/lib/types";
 import { Image } from "expo-image";
@@ -32,6 +33,14 @@ type DetailDonation = {
   expiryTime: Date | null;
 };
 
+type DonorInfo = {
+  fullName: string;
+  email: string;
+  phone?: string | null;
+  isVerified?: number | null;
+  donationCount?: number | null;
+};
+
 export default function DonationDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -40,6 +49,8 @@ export default function DonationDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [item, setItem] = useState<DetailDonation | null>(null);
+  const [donorInfo, setDonorInfo] = useState<DonorInfo | null>(null);
+  const [isFavorite, setIsFavorite] = useState(false);
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState("");
   const [editForm, setEditForm] = useState({
@@ -65,8 +76,34 @@ export default function DonationDetailScreen() {
         pickupAddress: donation.pickupAddress ?? "",
         contactNumber: donation.contactNumber ?? "",
       });
+
+      // Fetch donor information
+      try {
+        const donor = await authApi.getUserById(donation.userId);
+        if (donor) {
+          setDonorInfo({
+            fullName: donor.fullName,
+            email: donor.email,
+            phone: donor.phone,
+            isVerified: donor.isVerified,
+            donationCount: donor.donationCount,
+          });
+        }
+      } catch (err) {
+        console.error("Failed to load donor info:", err);
+      }
+
+      // Check if NGO has favorited this donor
+      if (ngoSession?.ngoId) {
+        try {
+          const favorite = await donationApi.isFavoriteDonor(ngoSession.ngoId, donation.userId);
+          setIsFavorite(favorite as boolean);
+        } catch (err) {
+          console.error("Failed to check favorite status:", err);
+        }
+      }
     }
-  }, [id]);
+  }, [id, ngoSession?.ngoId]);
 
   useEffect(() => {
     (async () => {
@@ -112,6 +149,20 @@ export default function DonationDetailScreen() {
       await donationApi.markCompleted(item.id, ngoSession.ngoId);
       setActionLoading(false);
       await load();
+    }
+  };
+
+  const toggleFavoriteDonor = async () => {
+    if (!item || !ngoSession?.ngoId || !donorInfo) return;
+    try {
+      setActionLoading(true);
+      await donationApi.toggleFavoriteDonor(ngoSession.ngoId, item.userId);
+      setIsFavorite(!isFavorite);
+    } catch (err) {
+      Alert.alert("Error", "Failed to update favorite status");
+      console.error(err);
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -163,6 +214,36 @@ export default function DonationDetailScreen() {
       <View style={{ marginTop: 12 }}>
         <StatusBadge status={item.status} />
       </View>
+
+      {/* Donor Information Card */}
+      {donorInfo && (
+        <View style={styles.block}>
+          <AppCard>
+            <Text style={styles.sectionLabel}>Donor Information</Text>
+            <View style={styles.donorHeader}>
+              <View style={styles.donorInfo}>
+                <Text style={styles.donorName}>{donorInfo.fullName}</Text>
+                <Text style={styles.donorEmail}>{donorInfo.email}</Text>
+                {donorInfo.phone && <Text style={styles.donorPhone}>{donorInfo.phone}</Text>}
+              </View>
+              {donorInfo.isVerified !== undefined && donorInfo.donationCount !== undefined && (
+                <DonorBadge
+                  isVerified={(donorInfo.isVerified as number) === 1}
+                  donationCount={donorInfo.donationCount as number}
+                  size="medium"
+                />
+              )}
+            </View>
+            {ngoSession?.ngoId && (
+              <AppButton
+                label={isFavorite ? "❤️ Remove from Favorites" : "🤍 Add to Favorites"}
+                onPress={toggleFavoriteDonor}
+                loading={actionLoading}
+              />
+            )}
+          </AppCard>
+        </View>
+      )}
 
       <View style={styles.block}>
         <AppCard>
@@ -247,34 +328,49 @@ export default function DonationDetailScreen() {
             </>
           ) : (
             <>
-              <AppButton label="Edit Donation" variant="ghost" onPress={() => setEditing(true)} />
-              <AppButton label="Delete Donation" variant="danger" onPress={() => {
-                Alert.alert(
-                  "Delete Donation",
-                  "Are you sure you want to delete this donation? This action cannot be undone.",
-                  [
-                    { text: "Cancel", style: "cancel" },
-                    {
-                      text: "Delete",
-                      style: "destructive",
-                      onPress: async () => {
-                        setActionLoading(true);
-                        try {
-                          if (user?.id) {
-                            await donationApi.delete(item.id, user.id);
-                            Alert.alert("Success", "Donation deleted.");
-                            router.back();
+              <AppButton
+                label="Edit Donation"
+                variant="ghost"
+                disabled={item.status !== "available"}
+                onPress={() => setEditing(true)}
+              />
+              <AppButton
+                label="Delete Donation"
+                variant="danger"
+                disabled={item.status !== "available"}
+                onPress={() => {
+                  Alert.alert(
+                    "Delete Donation",
+                    "Are you sure you want to delete this donation? This action cannot be undone.",
+                    [
+                      { text: "Cancel", style: "cancel" },
+                      {
+                        text: "Delete",
+                        style: "destructive",
+                        onPress: async () => {
+                          setActionLoading(true);
+                          try {
+                            if (user?.id) {
+                              await donationApi.delete(item.id, user.id);
+                              Alert.alert("Success", "Donation deleted.");
+                              router.back();
+                            }
+                          } catch (e) {
+                            Alert.alert("Error", "Could not delete donation.");
+                          } finally {
+                            setActionLoading(false);
                           }
-                        } catch (e) {
-                          Alert.alert("Error", "Could not delete donation.");
-                        } finally {
-                          setActionLoading(false);
-                        }
+                        },
                       },
-                    },
-                  ]
-                );
-              }} />
+                    ]
+                  );
+                }}
+              />
+              {item.status !== "available" && (
+                <Text style={styles.infoText}>
+                  ℹ️ You cannot edit or delete this donation while it's {item.status.replace(/_/g, " ")}.
+                </Text>
+              )}
             </>
           )
         ) : null}
@@ -299,6 +395,12 @@ const styles = StyleSheet.create({
   subtitle: { color: palette.muted, marginTop: 4 },
   error: { marginTop: 20, color: palette.danger, fontWeight: "700" },
   block: { marginTop: 12 },
+  sectionLabel: { fontSize: 16, fontWeight: "700", color: palette.primaryDark, marginBottom: 12 },
+  donorHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
+  donorInfo: { flex: 1 },
+  donorName: { fontSize: 16, fontWeight: "700", color: palette.text },
+  donorEmail: { fontSize: 14, color: palette.muted, marginTop: 2 },
+  donorPhone: { fontSize: 14, color: palette.muted, marginTop: 2 },
   heroWrap: { marginBottom: 14, borderRadius: 18, overflow: "hidden" },
   heroImage: { width: "100%", aspectRatio: 16 / 9, backgroundColor: "#E8F9EE" },
   editWrap: { gap: 10, marginBottom: 8 },
@@ -306,4 +408,5 @@ const styles = StyleSheet.create({
   rowLabel: { fontSize: 12, color: palette.muted, fontWeight: "700" },
   rowValue: { marginTop: 4, color: palette.text, fontSize: 15, lineHeight: 20 },
   actions: { marginTop: 16, gap: 10 },
+  infoText: { marginTop: 12, padding: 12, backgroundColor: palette.surface, borderRadius: 8, color: palette.muted, fontSize: 14, textAlign: "center" },
 });

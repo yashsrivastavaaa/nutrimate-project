@@ -67,6 +67,20 @@ export default function HomeScreen() {
         </AppCard>
       </View>
 
+      {user?.role === "donor" && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Discovery & Recognition</Text>
+          <AppButton
+            label="🏆 View Donor Leaderboard"
+            onPress={() => router.push("/(dashboard)/leaderboard" as any)}
+          />
+          <AppButton
+            label="❤️ My Favorite NGOs"
+            onPress={() => router.push("/(dashboard)/favorite-ngos" as any)}
+          />
+        </View>
+      )}
+
       <View style={styles.actions}>
         <AppButton
           label="Change Role"

@@ -101,3 +101,4 @@ const styles = StyleSheet.create({
   secondaryButton: { borderWidth: 1, borderColor: palette.border, paddingVertical: 15, borderRadius: 14, alignItems: "center" },
   secondaryButtonText: { color: "#374151", fontWeight: "600" },
 });
+

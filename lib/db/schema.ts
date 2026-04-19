@@ -20,7 +20,10 @@ export const userRoleEnum = pgEnum("user_role", [
 export const donationStatusEnum = pgEnum("donation_status", [
   "available",
   "reserved",
+  "ready",
   "pickup_assigned",
+  "awaiting_volunteer_pickup",
+  "awaiting_donor_handover",
   "picked",
   "delivered_to_ngo",
   "completed",
@@ -53,6 +56,8 @@ export const users = pgTable("users", {
   gender: text("gender"),
   avatarType: text("avatar_type"),
   password: text("password"),
+  isVerified: integer("is_verified").default(0), // 0 = unverified, 1 = verified
+  donationCount: integer("donation_count").default(0),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -65,6 +70,10 @@ export const ngo = pgTable("ngo", {
   city: varchar("city", { length: 100 }).notNull(),
   addressLine1: text("address_line1").notNull(),
   addressLine2: text("address_line2"),
+  description: text("description"),
+  contactNumber: text("contact_number"),
+  familiesServed: integer("families_served").default(0),
+  donationsReceived: integer("donations_received").default(0),
   status: ngoStatusEnum("status").notNull().default("pending"),
   createdAt: timestamp("created_at").defaultNow(),
 });
@@ -150,5 +159,22 @@ export const favoriteNgos = pgTable(
   },
   (table) => ({
     uniqueFavorite: uniqueIndex("favorite_ngos_user_id_ngo_id_unique").on(table.userId, table.ngoId),
+  })
+);
+
+export const favoriteDonors = pgTable(
+  "favorite_donors",
+  {
+    id: serial("id").primaryKey(),
+    ngoId: integer("ngo_id")
+      .notNull()
+      .references(() => ngo.ngoId),
+    donorId: text("donor_id")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => ({
+    uniqueFavoriteDonor: uniqueIndex("favorite_donors_ngo_id_donor_id_unique").on(table.ngoId, table.donorId),
   })
 );
